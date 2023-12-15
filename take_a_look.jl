@@ -41,6 +41,7 @@ Qs = - surface_fluxes_ds["Qs"][:]
 Q = Qh .+ Qs
 EP = mm_hour .* surface_fluxes_ds["EMP"][:]
 
+set_theme!(Theme(fontsize=36))
 fig = Figure(resolution=(3000, 2000))
 axT = Axis(fig[1, 1], ylabel="z (m)", xlabel="Temperature (ᵒC)")
 axS = Axis(fig[1, 2], ylabel="z (m)", xlabel="Salinity (g/kg)")
@@ -63,6 +64,8 @@ scatterlines!(axS, Sn, zS)
 
 xlims!(axT, 3, 14)
 xlims!(axS, 32.4, 34)
+ylims!(axT, -330, 30)
+ylims!(axS, -330, 30)
 
 lines!(axτ, ta, τˣ, label="τˣ")
 lines!(axτ, ta, τʸ, label="τʸ")
@@ -71,15 +74,20 @@ axislegend(axτ)
 
 lines!(axQ, ta, Qh, label="Non-solar heat flux")
 lines!(axQ, ta, Qs, label="Solar insolation")
-lines!(axQ, ta, Q, label="Total", linewidth=3)
+# lines!(axQ, ta, Q, label="Total", linewidth=3)
 vlines!(axQ, tn)
 axislegend(axQ)
 
 lines!(axF, ta, EP)
 vlines!(axF, tn)
 
-title = @lift string("Ocean station PAPA data at ", td[$n], " ($(n.val))")
+title = @lift string("Ocean station PAPA data at ", td[$n], " (", $n, ")")
 Label(fig[0, 1:2], title)
+
+record(fig, "ocean_station_papa.mp4", 1:NtT, framerate=24) do nn
+    @info "Plotting frame $nn of $NtT"
+    n[] = nn
+end
 
 display(fig)
 

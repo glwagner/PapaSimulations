@@ -1,13 +1,24 @@
+# This script saves temperature, salinity, and surface flux data to
+# files in the Oceananigans FieldTimeSeries format, so that it can be used to
+# initialize and force large eddy and single column simulations.
+
 using ClimaOcean
 using Oceananigans
 using Oceananigans.Fields: interpolate!
 using NCDatasets
 using GLMakie
 
-temperature_filename = "ospapa_temperature.nc"
+# Paths to NetCDF data
+temperature_filename    = "ospapa_temperature.nc"
+salinity_filename       = "ospapa_salinity.nc"
 surface_fluxes_filename = "ospapa_surface_forcing.nc"
-stokes_drift_filename = "ospapa_stokes_drift.nc"
-salinity_filename = "ospapa_salinity.nc"
+stokes_drift_filename   = "ospapa_stokes_drift.nc"
+
+# Filenames for saved data in Oceananigans FieldTimeSeries format
+profile_filename = "ocean_station_papa_profiles.jld2"
+flux_filename    = "ocean_station_papa_fluxes.jld2"
+
+isfile(profile_filename) && rm(profile_filename)
 
 temperature_ds    = Dataset(temperature_filename)
 surface_fluxes_ds = Dataset(surface_fluxes_filename)
@@ -92,8 +103,8 @@ end
 grid = RectilinearGrid(size=200, z=(-200, 0), topology=(Flat, Flat, Bounded))
 
 c_loc  = (Center, Center, Center)
-Tt = FieldTimeSeries(c_loc, grid, tT, backend=OnDisk(), path="ocean_station_papa_profiles.jld2", name="T")
-St = FieldTimeSeries(c_loc, grid, tT, backend=OnDisk(), path="ocean_station_papa_profiles.jld2", name="S")
+Tt = FieldTimeSeries(c_loc, grid, tT, backend=OnDisk(), path=profile_filename, name="T")
+St = FieldTimeSeries(c_loc, grid, tT, backend=OnDisk(), path=profile_filename, name="S")
 
 Tdata = CenterField(grid_T)
 Sdata = CenterField(grid_S)
@@ -101,7 +112,12 @@ Sdata = CenterField(grid_S)
 Tfine = CenterField(grid)
 Sfine = CenterField(grid)
 
+fig = Figure()
+axT = Axis(fig[1, 1])
+axS = Axis(fig[1, 2])
+
 for n = 1:NtT
+    local Nz
     Nz = size(T, 1)
     for k = Nz:-1:1
         field_from_data!(Tdata, T, k, n)
@@ -112,30 +128,68 @@ for n = 1:NtT
         field_from_data!(Sdata, S, k, n)
     end
 
+    fill_halo_regions!(Tdata)
+    fill_halo_regions!(Sdata)
+
     interpolate!(Tfine, Tdata)
     interpolate!(Sfine, Sdata)
+
+    fill_halo_regions!(Tfine)
+    fill_halo_regions!(Sfine)
+
+    @info "Saved profiles at time point $n of $NtT"
+
+    #=
+    zTdata = znodes(Tdata)
+    zSdata = znodes(Sdata)
+    zfine = znodes(Tfine)
+    scatterlines!(axT, interior(Tfine, 1, 1, :), zfine)
+    scatterlines!(axS, interior(Sfine, 1, 1, :), zfine)
+    display(fig)
+    sleep(1.1)
+    =#
 
     set!(Tt, Tfine, n)
     set!(St, Sfine, n)
 end
 
+Ttmem = FieldTimeSeries(profile_filename, "T")
+Stmem = FieldTimeSeries(profile_filename, "S")
+t = Ttmem.times
+Nt = length(t)
+z = znodes(Ttmem)
+fig = Figure()
+axT = Axis(fig[1, 1])
+axS = Axis(fig[1, 2])
+slider = Slider(fig[2, 1:2], range=1:Nt, startvalue=1)
+n = slider.value
+Tn = @lift interior(Ttmem[$n], 1, 1, :)
+Sn = @lift interior(Stmem[$n], 1, 1, :)
+scatterlines!(axT, Tn, z)
+scatterlines!(axS, Sn, z)
+display(fig)
+
 Q_loc  = (Center, Center, Nothing)
-τxt = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path="ocean_station_papa_fluxes.jld2", name="τx")
-τyt = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path="ocean_station_papa_fluxes.jld2", name="τy")
-Qt  = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path="ocean_station_papa_fluxes.jld2", name="Q")
-Ft  = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path="ocean_station_papa_fluxes.jld2", name="F")
+τxt  = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="τx")
+τyt  = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="τy")
+Qt   = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="Q")
+Qswt = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="Qsw")
+Qht  = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="Qh")
+Ft   = FieldTimeSeries(Q_loc, grid, tF, backend=OnDisk(), path=flux_filename, name="F")
 
 flux = Field{Center, Center, Nothing}(grid)
 
 function set_flux!(flux, data, n)
-    if ismissing(data[n])
-        if n > 1
-            data[n] = data[n-1]
-        else
-            data[n] = data[n+1]
+    @inbounds begin
+        if ismissing(data[n])
+            if n > 1
+                data[n] = data[n-1]
+            else
+                data[n] = data[n+1]
+            end
         end
+        flux[1, 1, 1] = data[n]
     end
-    flux[1, 1, 1] = data[n]
     return nothing
 end
 
@@ -149,8 +203,16 @@ for n = 1:NtF
     set_flux!(flux, Q, n)
     set!(Qt, flux, n)
 
+    set_flux!(flux, Qs, n)
+    set!(Qswt, flux, n)
+
+    set_flux!(flux, Qh, n)
+    set!(Qht, flux, n)
+
     set_flux!(flux, F, n)
     set!(Ft, flux, n)
+
+    @info "Saved fluxes at time point $n of $NtF"
 end
 
 #=
@@ -196,3 +258,4 @@ Label(fig[0, 1:2], title)
 
 display(fig)
 =#
+
